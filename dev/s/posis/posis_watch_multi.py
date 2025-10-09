@@ -80,6 +80,15 @@ def _iso(dt: _dt.datetime) -> str:
 def _parse_iso(s: str) -> _dt.datetime:
     return _dt.datetime.strptime(s, ISO8601)
 
+def _build_subprocess_env(cwd: Path) -> Dict[str, str]:
+    env = dict(os.environ)
+
+    if env.get("POSIS_FORWARD_GITHUB_TOKEN") != "1":
+        env.pop("GITHUB_TOKEN", None)
+
+    env["PWD"] = str(cwd)
+    return env
+
 def discover_git_remote(path: Path) -> Optional[str]:
     """Return the remote.origin.url for a git repo at 'path', else None."""
     try:
@@ -429,6 +438,7 @@ def run_external(codex_cmd: str, codex_args: List[str], payload: Optional[str], 
             capture_output=True,
             timeout=timeout,
             cwd=str(cwd),
+            env=_build_subprocess_env(cwd),
         )
         out = proc.stdout.decode("utf-8", errors="replace")
         err = proc.stderr.decode("utf-8", errors="replace")
