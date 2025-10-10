@@ -222,6 +222,30 @@ class GitHub:
             url, params = next_url, {}
         return comments
 
+    def list_review_comments_since(self, repo: str, since_iso: str, per_page: int = 100) -> List[dict]:
+        """List pull request review comments across a repo since ISO time."""
+        comments: List[dict] = []
+        url = f"{self.api}/repos/{repo}/pulls/comments"
+        params = {"since": since_iso, "per_page": per_page, "page": 1}
+        while True:
+            r = self.session.get(url, params=params, timeout=60)
+            if r.status_code == 304:
+                break
+            r.raise_for_status()
+            batch = r.json()
+            if not isinstance(batch, list):
+                break
+            comments.extend(batch)
+            link = r.headers.get("Link", "")
+            if 'rel="next"' not in link:
+                break
+            m = re.search(r'<([^>]+)>;\s*rel="next"', link)
+            if not m:
+                break
+            next_url = m.group(1)
+            url, params = next_url, {}
+        return comments
+
     def get_issue(self, repo: str, number: int) -> dict:
         r = self.session.get(f"{self.api}/repos/{repo}/issues/{number}", timeout=30)
         r.raise_for_status()
@@ -298,6 +322,22 @@ class GitHub:
         r.raise_for_status()
         return True
 
+    def add_reaction_to_review_comment(self, repo: str, comment_id: int, content: str) -> bool:
+        url = f"{self.api}/repos/{repo}/pulls/comments/{comment_id}/reactions"
+        headers = {
+            "Accept": "application/vnd.github+json, application/vnd.github.squirrel-girl-preview+json",
+            "Content-Type": "application/json",
+        }
+        r = self.session.post(url, json={"content": content}, headers=headers, timeout=30)
+        log = logging.getLogger("reporelay")
+        log.info("Reaction response for %s review comment %s: %s", repo, comment_id, r.status_code)
+        if r.status_code in (200, 201):
+            return True
+        if r.status_code in (204, 409):
+            return False
+        r.raise_for_status()
+        return True
+
 class State:
     def __init__(self, path: Path):
         self.path = str(path)
@@ -327,16 +367,27 @@ class State:
             self.data["repos"][repo] = {
                 "path": str(path),
                 "last_since": _iso(_dt.datetime.utcnow() - _dt.timedelta(days=7)),
+                "pr_review_last_since": _iso(_dt.datetime.utcnow() - _dt.timedelta(days=7)),
                 "processed_comment_ids": [],
+                "processed_review_comment_ids": [],
                 "runs": {},
                 "issue_runs": {},
+                "pr_runs": {},
             }
         else:
             # keep path up to date if it changed
             self.data["repos"][repo]["path"] = str(path)
             self.data["repos"][repo].setdefault("processed_comment_ids", [])
+            self.data["repos"][repo].setdefault("processed_review_comment_ids", [])
             self.data["repos"][repo].setdefault("runs", {})
             self.data["repos"][repo].setdefault("issue_runs", {})
+            self.data["repos"][repo].setdefault("pr_runs", {})
+            if "last_since" not in self.data["repos"][repo]:
+                self.data["repos"][repo]["last_since"] = _iso(_dt.datetime.utcnow() - _dt.timedelta(days=7))
+            self.data["repos"][repo].setdefault(
+                "pr_review_last_since",
+                self.data["repos"][repo].get("last_since", _iso(_dt.datetime.utcnow() - _dt.timedelta(days=7))),
+            )
 
     def save(self):
         tmp = self.path + ".tmp"
@@ -381,19 +432,31 @@ def find_parent_issue_number(issue_body: str) -> Optional[int]:
                 return int(m2.group(1))
     return None
 
-def build_job_input(repo: str, issue: dict, comments: List[dict], parent: Optional[dict], trigger_comment: dict, resume: bool) -> str:
+def build_job_input(
+    repo: str,
+    issue: dict,
+    comments: List[dict],
+    parent: Optional[dict],
+    trigger_comment: dict,
+    resume: bool,
+    conversation_type: str = "issue",
+) -> str:
+    conversation_type = conversation_type or "issue"
+    label = "PR" if conversation_type == "pr" else "ISSUE"
+    body_label = f"{label} BODY"
+    comments_label = f"{label} COMMENTS (chronological)"
     header = [
         f"REPO: {repo}",
-        f"ISSUE: #{issue['number']} - {issue.get('title','').strip()}",
+        f"{label}: #{issue['number']} - {issue.get('title','').strip()}",
         f"TRIGGERED_BY: comment_id={trigger_comment.get('id')} by @{trigger_comment.get('user',{}).get('login','')} at {trigger_comment.get('created_at')}",
         f"MODE: {'RESUME' if resume else 'NEW'}",
         "",
         "=== INITIAL INSTRUCTIONS (SYSTEM) ===",
-        "1) Read the 'ISSUE BODY', 'PARENT ISSUE BODY' (if present), and 'ISSUE COMMENTS'.",
-        "2) Follow the instructions contained in the issue (and parent if relevant).",
+        "1) Read the conversation body, any linked parent issue body, and the collected comments.",
+        "2) Follow the instructions contained in the conversation (and parent if relevant).",
         "3) Perform the requested work, and provide your output.",
         "",
-        "=== ISSUE BODY ===",
+        f"=== {body_label} ===",
         issue.get("body") or "(no body)",
         "",
     ]
@@ -406,7 +469,15 @@ def build_job_input(repo: str, issue: dict, comments: List[dict], parent: Option
             "",
         ])
 
-    header.append("=== ISSUE COMMENTS (chronological) ===")
+    trigger_body = trigger_comment.get("body") or ""
+    if trigger_body:
+        header.extend([
+            "=== TRIGGER COMMENT BODY ===",
+            trigger_body,
+            "",
+        ])
+
+    header.append(f"=== {comments_label} ===")
     for c in sorted(comments, key=lambda x: x.get("created_at","")):
         who = c.get("user", {}).get("login", "unknown")
         when = c.get("created_at", "?")
@@ -623,44 +694,42 @@ def main():
                 # Update watermark to now (double-guarded by processed_comment_ids)
                 meta["last_since"] = _now_utc()
 
-                for c in sorted(comments, key=lambda x: x.get("created_at","")):
+                processed_comments = meta.setdefault("processed_comment_ids", [])
+                processed = set(processed_comments)
+                issue_runs = meta.setdefault("issue_runs", {})
+                pr_runs = meta.setdefault("pr_runs", {})
+
+                for c in sorted(comments, key=lambda x: x.get("created_at", "")):
                     cid = c.get("id")
                     if cid in processed:
                         continue
                     body = (c.get("body") or "")
 
-                    # Ignore our own comments to prevent loops
                     author = c.get("user", {}).get("login", "")
                     if cfg.ignore_self and author == me:
-                        meta.setdefault("processed_comment_ids", []).append(cid)
+                        processed_comments.append(cid)
                         processed.add(cid)
                         continue
 
-                    # Regex match
                     if not trigger_re.search(body):
-                        meta.setdefault("processed_comment_ids", []).append(cid)
+                        processed_comments.append(cid)
                         processed.add(cid)
                         continue
 
-                    # Determine issue number
-                    issue_url = c.get("issue_url","")
+                    issue_url = c.get("issue_url", "")
                     m = re.search(r"/issues/(\d+)$", issue_url)
                     if not m:
-                        meta.setdefault("processed_comment_ids", []).append(cid)
+                        processed_comments.append(cid)
                         processed.add(cid)
                         continue
                     number = int(m.group(1))
 
                     issue = gh.get_issue(repo, number)
-                    if "pull_request" in issue:
-                        # Skip PRs; watcher is for issues
-                        meta.setdefault("processed_comment_ids", []).append(cid)
-                        processed.add(cid)
-                        continue
+                    is_pr = "pull_request" in issue
 
-                    issue_runs = meta.setdefault("issue_runs", {})
+                    conversation_type = "pr" if is_pr else "issue"
+                    runs_store = pr_runs if is_pr else issue_runs
 
-                    # Gather context for the issue
                     issue_comments = gh.list_issue_comments(repo, number)
                     parent_issue = None
                     pnum = find_parent_issue_number(issue.get("body", "") or "")
@@ -671,8 +740,8 @@ def main():
                             logging.warning("Could not fetch parent issue #%s in %s: %r", pnum, repo, e)
 
                     intent, requested_id = extract_intent(body)
-                    issue_state = issue_runs.get(str(number), {})
-                    stored_id = issue_state.get("codex_run_id")
+                    conversation_state = runs_store.get(str(number), {})
+                    stored_id = conversation_state.get("codex_run_id")
                     args, send_payload, resume_flag, resume_target = decide_codex_invocation(
                         cfg, intent, requested_id, stored_id
                     )
@@ -684,15 +753,17 @@ def main():
                         parent_issue,
                         c,
                         resume=resume_flag,
+                        conversation_type=conversation_type,
                     )
                     payload_to_send = payload if send_payload else None
 
                     run_id = f"{repo.replace('/', '_')}-{number}-{cid}-{int(time.time())}"
                     log.info(
-                        "Trigger from @%s on %s#%d (comment %s); intent=%s; resume=%s; run_id=%s; cwd=%s",
+                        "Trigger from @%s on %s#%d (%s comment %s); intent=%s; resume=%s; run_id=%s; cwd=%s",
                         author,
                         repo,
                         number,
+                        conversation_type.upper(),
                         cid,
                         intent,
                         resume_flag,
@@ -719,9 +790,9 @@ def main():
                         try:
                             reacted = gh.add_reaction_to_comment(repo, cid, "eyes")
                             if reacted:
-                                log.info("Added 👀 reaction to %s comment %s", repo, cid)
+                                log.info("Added 👀 reaction to %s %s comment %s", repo, conversation_type, cid)
                         except Exception as e:
-                            log.warning("Failed to add reaction to %s comment %s: %r", repo, cid, e)
+                            log.warning("Failed to add reaction to %s %s comment %s: %r", repo, conversation_type, cid, e)
 
                     try:
                         gh.post_issue_comment(repo, number, comment_body)
@@ -737,35 +808,215 @@ def main():
                         "run_id": run_id,
                         "resume": resume_flag,
                         "returncode": rc,
-                        "source": "comment",
+                        "source": f"{conversation_type}_comment",
                         "codex_run_id": codex_id,
                     }
 
-                    new_issue_run = dict(issue_state)
-                    new_issue_run.update(
+                    updated_field = "last_pr_updated" if is_pr else "last_issue_updated"
+                    new_state = dict(conversation_state)
+                    new_state.update(
                         {
-                            "last_issue_updated": issue_updated_at,
+                            updated_field: issue_updated_at,
                             "run_id": run_id,
                             "returncode": rc,
                             "status": "ok" if ok else "error",
                         }
                     )
                     if codex_id:
-                        new_issue_run["codex_run_id"] = codex_id
-                    issue_runs[str(number)] = new_issue_run
+                        new_state["codex_run_id"] = codex_id
+                    runs_store[str(number)] = new_state
 
-                    meta.setdefault("processed_comment_ids", []).append(cid)
+                    processed_comments.append(cid)
                     processed.add(cid)
 
-                    # Persist after each execution
                     st.save()
 
+                review_processed_list = meta.setdefault("processed_review_comment_ids", [])
+                review_processed = set(review_processed_list)
+                review_since = meta.get("pr_review_last_since") or since
+                review_comments = gh.list_review_comments_since(repo, review_since)
+                meta["pr_review_last_since"] = _now_utc()
+
+                for rc in sorted(review_comments, key=lambda x: x.get("created_at", "")):
+                    rcid = rc.get("id")
+                    if rcid in review_processed:
+                        continue
+
+                    body = (rc.get("body") or "")
+                    author = rc.get("user", {}).get("login", "")
+                    if cfg.ignore_self and author == me:
+                        review_processed_list.append(rcid)
+                        review_processed.add(rcid)
+                        continue
+
+                    if not trigger_re.search(body):
+                        review_processed_list.append(rcid)
+                        review_processed.add(rcid)
+                        continue
+
+                    pr_url = rc.get("pull_request_url") or ""
+                    pr_match = re.search(r"/pulls/(\d+)$", pr_url)
+                    if not pr_match:
+                        review_processed_list.append(rcid)
+                        review_processed.add(rcid)
+                        continue
+                    number = int(pr_match.group(1))
+
+                    issue = gh.get_issue(repo, number)
+                    if "pull_request" not in issue:
+                        review_processed_list.append(rcid)
+                        review_processed.add(rcid)
+                        continue
+
+                    issue_comments = gh.list_issue_comments(repo, number)
+                    parent_issue = None
+                    pnum = find_parent_issue_number(issue.get("body", "") or "")
+                    if pnum:
+                        try:
+                            parent_issue = gh.get_issue(repo, pnum)
+                        except Exception as e:
+                            logging.warning(
+                                "Could not fetch parent issue #%s in %s (review trigger): %r",
+                                pnum,
+                                repo,
+                                e,
+                            )
+
+                    runs_store = pr_runs
+                    intent, requested_id = extract_intent(body)
+                    conversation_state = runs_store.get(str(number), {})
+                    stored_id = conversation_state.get("codex_run_id")
+                    args, send_payload, resume_flag, resume_target = decide_codex_invocation(
+                        cfg,
+                        intent,
+                        requested_id,
+                        stored_id,
+                    )
+
+                    location_bits: List[str] = []
+                    if rc.get("path"):
+                        location_bits.append(f"path={rc['path']}")
+                    if rc.get("line"):
+                        location_bits.append(f"line={rc['line']}")
+                    elif rc.get("original_line"):
+                        location_bits.append(f"original_line={rc['original_line']}")
+                    if rc.get("side"):
+                        location_bits.append(f"side={rc['side']}")
+                    review_context = ", ".join(location_bits)
+                    review_body = body
+                    if review_context:
+                        review_body = f"{review_body}\n\n[Review context: {review_context}]"
+                    if rc.get("html_url"):
+                        review_body = f"{review_body}\n\nLink: {rc['html_url']}"
+
+                    trigger_comment = {
+                        "id": rcid,
+                        "user": rc.get("user") or {},
+                        "created_at": rc.get("created_at") or rc.get("updated_at") or _now_utc(),
+                        "body": review_body,
+                    }
+
+                    payload = build_job_input(
+                        repo,
+                        issue,
+                        issue_comments,
+                        parent_issue,
+                        trigger_comment,
+                        resume=resume_flag,
+                        conversation_type="pr",
+                    )
+                    payload_to_send = payload if send_payload else None
+
+                    run_id = f"{repo.replace('/', '_')}-{number}-review-{rcid}-{int(time.time())}"
+                    log.info(
+                        "Trigger from review comment by @%s on %s#%d (comment %s); intent=%s; resume=%s; run_id=%s; cwd=%s",
+                        author,
+                        repo,
+                        number,
+                        rcid,
+                        intent,
+                        resume_flag,
+                        run_id,
+                        local_path,
+                    )
+
+                    rc_status, out, err = run_external(
+                        cfg.codex_cmd,
+                        args,
+                        payload_to_send,
+                        cfg.codex_timeout,
+                        cwd=local_path,
+                    )
+                    processed_out = postprocess_stdout(out, cfg.codex_cmd)
+
+                    ok = (rc_status == 0) and bool(processed_out.strip())
+                    comment_body = format_result_comment(ok, run_id, rc_status, processed_out, err)
+                    if rc.get("html_url"):
+                        comment_body = f"Triggered from review comment {rc['html_url']} by @{author}\n\n" + comment_body
+                    combined = "\n".join(part for part in (out, err) if part)
+                    codex_id = extract_codex_run_id(combined) or (resume_target if resume_flag else None)
+                    issue_updated_at = issue.get("updated_at") or issue.get("created_at") or _now_utc()
+
+                    if ok and rcid is not None:
+                        try:
+                            reacted = gh.add_reaction_to_review_comment(repo, rcid, "eyes")
+                            if reacted:
+                                log.info("Added 👀 reaction to %s review comment %s", repo, rcid)
+                        except Exception as e:
+                            log.warning("Failed to add reaction to %s review comment %s: %r", repo, rcid, e)
+
+                    try:
+                        gh.post_issue_comment(repo, number, comment_body)
+                    except requests.HTTPError as e:
+                        log.error(
+                            "Failed to post comment to %s#%d (review trigger): %s",
+                            repo,
+                            number,
+                            e,
+                        )
+                    except Exception as e:
+                        log.error(
+                            "Unexpected error posting comment to %s#%d (review trigger): %r",
+                            repo,
+                            number,
+                            e,
+                        )
+
+                    meta.setdefault("runs", {})[str(number)] = {
+                        "status": "ok" if ok else "error",
+                        "last_run_at": _now_utc(),
+                        "last_comment_id": rcid,
+                        "run_id": run_id,
+                        "resume": resume_flag,
+                        "returncode": rc_status,
+                        "source": "pr_review_comment",
+                        "codex_run_id": codex_id,
+                    }
+
+                    conversation_record = dict(conversation_state)
+                    conversation_record.update(
+                        {
+                            "last_pr_updated": issue_updated_at,
+                            "run_id": run_id,
+                            "returncode": rc_status,
+                            "status": "ok" if ok else "error",
+                        }
+                    )
+                    if codex_id:
+                        conversation_record["codex_run_id"] = codex_id
+                    runs_store[str(number)] = conversation_record
+
+                    review_processed_list.append(rcid)
+                    review_processed.add(rcid)
+
+                    st.save()
                 if cfg.match_target == "issue_or_comments":
                     issue_runs = meta.setdefault("issue_runs", {})
+                    pr_runs = meta.setdefault("pr_runs", {})
                     issues = gh.list_issues_since(repo, since)
                     for issue in issues:
-                        if "pull_request" in issue:
-                            continue
+                        is_pr = "pull_request" in issue
+
                         title_text = issue.get("title", "") or ""
                         body_text = issue.get("body", "") or ""
                         if not (trigger_re.search(title_text) or trigger_re.search(body_text)):
@@ -776,7 +1027,9 @@ def main():
                             continue
 
                         issue_updated_at = issue.get("updated_at") or issue.get("created_at") or _now_utc()
-                        last_processed_at = issue_runs.get(str(number), {}).get("last_issue_updated")
+                        runs_store = pr_runs if is_pr else issue_runs
+                        updated_field = "last_pr_updated" if is_pr else "last_issue_updated"
+                        last_processed_at = runs_store.get(str(number), {}).get(updated_field)
                         if last_processed_at == issue_updated_at:
                             continue
 
@@ -787,7 +1040,12 @@ def main():
                             try:
                                 parent_issue = gh.get_issue(repo, pnum)
                             except Exception as e:
-                                logging.warning("Could not fetch parent issue #%s in %s (issue trigger): %r", pnum, repo, e)
+                                logging.warning(
+                                    "Could not fetch parent issue #%s in %s (issue trigger): %r",
+                                    pnum,
+                                    repo,
+                                    e,
+                                )
 
                         trigger_id = issue.get("id") or f"issue-{number}"
                         trigger_comment = {
@@ -798,8 +1056,8 @@ def main():
                         }
 
                         intent, requested_id = extract_intent(trigger_comment["body"])
-                        issue_state = issue_runs.get(str(number), {})
-                        stored_id = issue_state.get("codex_run_id")
+                        conversation_state = runs_store.get(str(number), {})
+                        stored_id = conversation_state.get("codex_run_id")
                         args, send_payload, resume_flag, resume_target = decide_codex_invocation(
                             cfg, intent, requested_id, stored_id
                         )
@@ -811,12 +1069,14 @@ def main():
                             parent_issue,
                             trigger_comment,
                             resume=resume_flag,
+                            conversation_type="pr" if is_pr else "issue",
                         )
                         payload_to_send = payload if send_payload else None
 
                         run_id = f"{repo.replace('/', '_')}-{number}-{trigger_id}-{int(time.time())}"
                         log.info(
-                            "Trigger from issue body/title on %s#%d; intent=%s; resume=%s; run_id=%s; cwd=%s",
+                            "Trigger from %s body/title on %s#%d; intent=%s; resume=%s; run_id=%s; cwd=%s",
+                            "PR" if is_pr else "issue",
                             repo,
                             number,
                             intent,
@@ -842,9 +1102,21 @@ def main():
                         try:
                             gh.post_issue_comment(repo, number, comment_body)
                         except requests.HTTPError as e:
-                            log.error("Failed to post comment to %s#%d (issue trigger): %s", repo, number, e)
+                            log.error(
+                                "Failed to post comment to %s#%d (%s trigger): %s",
+                                repo,
+                                number,
+                                "pr" if is_pr else "issue",
+                                e,
+                            )
                         except Exception as e:
-                            log.error("Unexpected error posting comment to %s#%d (issue trigger): %r", repo, number, e)
+                            log.error(
+                                "Unexpected error posting comment to %s#%d (%s trigger): %r",
+                                repo,
+                                number,
+                                "pr" if is_pr else "issue",
+                                e,
+                            )
 
                         meta.setdefault("runs", {})[str(number)] = {
                             "status": "ok" if ok else "error",
@@ -853,29 +1125,32 @@ def main():
                             "run_id": run_id,
                             "resume": resume_flag,
                             "returncode": rc,
-                            "source": "issue",
+                            "source": "pr_issue" if is_pr else "issue",
                             "codex_run_id": codex_id,
                         }
 
-                        issue_run_record = dict(issue_state)
-                        issue_run_record.update(
+                        conversation_record = dict(conversation_state)
+                        conversation_record.update(
                             {
-                                "last_issue_updated": issue_updated_at,
+                                updated_field: issue_updated_at,
                                 "run_id": run_id,
                                 "returncode": rc,
                                 "status": "ok" if ok else "error",
                             }
                         )
                         if codex_id:
-                            issue_run_record["codex_run_id"] = codex_id
+                            conversation_record["codex_run_id"] = codex_id
 
-                        issue_runs[str(number)] = issue_run_record
+                        runs_store[str(number)] = conversation_record
 
                         st.save()
 
                 # Trim processed list per repo
                 if len(meta.get("processed_comment_ids", [])) > 5000:
                     meta["processed_comment_ids"] = meta["processed_comment_ids"][-2000:]
+                    st.save()
+                if len(meta.get("processed_review_comment_ids", [])) > 5000:
+                    meta["processed_review_comment_ids"] = meta["processed_review_comment_ids"][-2000:]
                     st.save()
 
                 if cfg.per_repo_pause > 0:
