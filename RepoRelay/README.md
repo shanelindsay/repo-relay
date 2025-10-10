@@ -34,14 +34,14 @@ tmux attach -t reporelay
 ```
 
 ## Configuration
-RepoRelay reads `REPORELAY_*` environment variables:
-- `REPORELAY_ROOT` (`$PWD`): Top-level directory that contains the repos to watch.
+RepoRelay first loads environment variables from a `.env` file in this directory (if present), then reads `REPORELAY_*` overrides:
+- `REPORELAY_ROOT` (`parent of this checkout`): Top-level directory that contains the repos to watch.
 - `REPORELAY_RECURSIVE` (`0`): Set to `1` to walk subdirectories recursively.
 - `REPORELAY_REQUIRE_MARKER` (`0`): Set to `1` to only include repos containing `.reporelay-enabled` .
 - `REPORELAY_EXCLUDE_DIRS` (empty): Comma-separated directory names to skip during discovery.
 - `REPORELAY_REGEX` (`codexe`): Case-insensitive regex used to detect triggers.
 - `REPORELAY_MATCH_TARGET` (`comments`): Set to `issue_or_comments` to also match issue titles/bodies.
-- `REPORELAY_IGNORE_SELF` (`1`): Leave at `1` to skip comments written by the authenticated account; set to `0` to allow self-triggers.
+- `REPORELAY_IGNORE_SELF` (`0`): Leave at `0` to process comments written by the authenticated account; set to `1` to skip self-authored comments and avoid loops.
 - `REPORELAY_POLL_SECONDS` (`20`): Poll interval for the GitHub API loop.
 - `REPORELAY_PER_REPO_PAUSE` (`0.3`): Sleep inserted between repos to spread API calls.
 - `REPORELAY_STATE` (`$REPORELAY_ROOT/.reporelay_state.json`): JSON file storing per-repo watermarks and history .
@@ -64,4 +64,3 @@ Run `python -m unittest discover -s tests` from the repo root. A minimal `mock_c
 
 ## Documentation
 - `RepoRelay/TEST_PLAN.md` – manual / agent validation scenarios.
-
