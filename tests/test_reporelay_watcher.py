@@ -243,7 +243,8 @@ class PostprocessStdoutTests(unittest.TestCase):
             "tokens used\n123\n"
         )
         trimmed = pwm.postprocess_stdout(raw, "codex")
-        self.assertIn("## Result", trimmed)
+        self.assertTrue(trimmed.startswith("First result"))
+        self.assertIn("## Decisions", trimmed)
         self.assertNotIn("tokens used", trimmed)
         self.assertNotIn("codex\n", trimmed)
 
@@ -267,7 +268,7 @@ class PostprocessStdoutTests(unittest.TestCase):
             "All good.\n"
         )
         trimmed = pwm.postprocess_stdout(raw, "codex")
-        self.assertEqual(trimmed, "### Summary\nAll good.")
+        self.assertEqual(trimmed, "All good.")
 
 
 class WatermarkComputationTests(unittest.TestCase):

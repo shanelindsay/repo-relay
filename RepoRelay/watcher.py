@@ -610,6 +610,19 @@ def postprocess_stdout(out: str, codex_cmd: str) -> str:
                 to_join.insert(0, blocks[-2])
             cleaned = "\n\n".join(to_join)
 
+        original_cleaned = cleaned
+        lines = cleaned.splitlines()
+        removed = False
+        while lines and lines[0].lstrip().startswith("#"):
+            removed = True
+            lines = lines[1:]
+            while lines and not lines[0].strip():
+                lines = lines[1:]
+        if removed:
+            cleaned = "\n".join(lines).strip()
+            if not cleaned:
+                cleaned = original_cleaned
+
     return cleaned or out.strip()
 
 
