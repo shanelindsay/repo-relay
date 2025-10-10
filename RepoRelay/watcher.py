@@ -40,6 +40,25 @@ def _env_flag(key: str, default: bool) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _load_env_file(path: Path) -> None:
+    """Populate os.environ with values from a simple ``.env`` file if present."""
+    try:
+        data = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    for line in data.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        os.environ[key] = value.strip()
+
+
 def _strip_ansi(text: str) -> str:
     if not text:
         return text
@@ -157,7 +176,7 @@ class Config:
     lockfile: Path = field(default=None)
     require_marker: bool = field(default_factory=lambda: _env_flag("REQUIRE_MARKER", False))
     exclude_dirs: List[str] = field(default_factory=lambda: [s for s in _env("EXCLUDE_DIRS", "").split(",") if s])
-    ignore_self: bool = field(default_factory=lambda: _env_flag("IGNORE_SELF", True))
+    ignore_self: bool = field(default_factory=lambda: _env_flag("IGNORE_SELF", False))
     default_resume: bool = field(default_factory=lambda: _env_flag("DEFAULT_RESUME", True))
     resume_send_context: bool = field(default_factory=lambda: _env_flag("RESUME_SEND_CONTEXT", False))
 
@@ -174,10 +193,13 @@ class Config:
 
     @staticmethod
     def from_env() -> "Config":
+        cwd = Path(os.getcwd()).resolve()
+        _load_env_file(cwd / ".env")
         token = os.getenv("GITHUB_TOKEN", "").strip()
         if not token:
             sys.exit("GITHUB_TOKEN is required in environment.")
-        root = Path(_env("ROOT", os.getcwd())).resolve()
+        default_root = cwd.parent if cwd.parent != cwd else cwd
+        root = Path(_env("ROOT", str(default_root))).resolve()
         return Config(token=token, root=root)
 
 class GitHub:

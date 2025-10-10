@@ -192,6 +192,20 @@ class CommandSelectionTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_env_file_supplies_token_and_default_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "RepoRelay"
+            repo.mkdir()
+            (repo / ".env").write_text("GITHUB_TOKEN=envtoken\n", encoding="utf-8")
+
+            with mock.patch.dict(os.environ, {}, clear=True):
+                with mock.patch("os.getcwd", return_value=str(repo)):
+                    cfg = pwm.Config.from_env()
+
+            self.assertEqual(cfg.token, "envtoken")
+            self.assertEqual(cfg.root, Path(tmp).resolve())
+            self.assertFalse(cfg.ignore_self)
+
     def test_invalid_match_target_exits(self):
         with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "token", "REPORELAY_MATCH_TARGET": "nope"}, clear=True):
             with self.assertRaises(SystemExit):
@@ -205,6 +219,11 @@ class ConfigTests(unittest.TestCase):
         ):
             cfg = pwm.Config.from_env()
             self.assertEqual(cfg.per_repo_pause, 0.0)
+
+    def test_ignore_self_default_false(self):
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "token"}, clear=True):
+            cfg = pwm.Config.from_env()
+            self.assertFalse(cfg.ignore_self)
 
     def test_ignore_self_flag(self):
         with mock.patch.dict(
