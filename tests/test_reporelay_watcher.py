@@ -252,6 +252,23 @@ class PostprocessStdoutTests(unittest.TestCase):
         trimmed = pwm.postprocess_stdout(raw, "other")
         self.assertEqual(trimmed, raw)
 
+    def test_codex_metadata_is_stripped(self):
+        raw = (
+            "OpenAI Codex v0.44.0 (research preview)\n"
+            "--------\n"
+            "workdir: /tmp/repo\n"
+            "model: gpt-5-codex\n"
+            "thinking\n"
+            "exec\n"
+            "bash -lc ls\n"
+            "foo\n"
+            "\n"
+            "### Summary\n"
+            "All good.\n"
+        )
+        trimmed = pwm.postprocess_stdout(raw, "codex")
+        self.assertEqual(trimmed, "### Summary\nAll good.")
+
 
 class WatermarkComputationTests(unittest.TestCase):
     def test_compute_new_since_uses_latest_timestamp(self):

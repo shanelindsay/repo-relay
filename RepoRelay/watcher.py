@@ -551,25 +551,66 @@ def postprocess_stdout(out: str, codex_cmd: str) -> str:
     lower = out.lower()
     tokens_idx = lower.rfind("tokens used")
     if tokens_idx == -1:
-        return out.strip()
-
-    prefix = out[:tokens_idx].rstrip()
-
-    marker_idx = prefix.lower().rfind("\ncodex\n")
-    if marker_idx == -1:
-        marker_idx = prefix.lower().rfind("\nthinking\n")
-    if marker_idx == -1:
-        marker_idx = 0
+        candidate = out
     else:
-        marker_idx = marker_idx + prefix[marker_idx:].find("\n") + 1
+        candidate = out[:tokens_idx].rstrip()
 
-    trimmed = prefix[marker_idx:].strip()
+    lower_candidate = candidate.lower()
+    marker_idx = lower_candidate.rfind("\ncodex\n")
+    if marker_idx == -1:
+        marker_idx = lower_candidate.rfind("\nthinking\n")
+    if marker_idx != -1:
+        marker_idx = marker_idx + candidate[marker_idx:].find("\n") + 1
+        candidate = candidate[marker_idx:]
 
-    lines = trimmed.splitlines()
-    if lines and lines[0].strip().lower() == "codex":
-        lines = lines[1:]
+    lines = candidate.splitlines()
+    skip_prefixes = (
+        "openai codex",
+        "--------",
+        "workdir:",
+        "model:",
+        "provider:",
+        "approval:",
+        "sandbox:",
+        "reasoning",
+        "session id:",
+        "user",
+        "thinking",
+        "exec",
+        "bash -lc",
+        "codex",
+        "python",
+        "git ",
+        "ls",
+        "pwd",
+    )
 
-    return "\n".join(lines).strip() or out.strip()
+    filtered: List[str] = []
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            if filtered and filtered[-1] != "":
+                filtered.append("")
+            continue
+        lower_line = stripped.lower()
+        if any(lower_line.startswith(prefix) for prefix in skip_prefixes):
+            continue
+        filtered.append(stripped)
+
+    cleaned = "\n".join(filtered).strip()
+    if cleaned:
+        blocks = [block.strip() for block in re.split(r"\n\s*\n", cleaned) if block.strip()]
+        if blocks:
+            last = blocks[-1]
+            to_join = [last]
+            if "#" in last and len(blocks) > 1 and "#" in blocks[-2]:
+                to_join.insert(0, blocks[-2])
+            elif "#" not in last and len(blocks) > 1:
+                to_join.insert(0, blocks[-2])
+            cleaned = "\n\n".join(to_join)
+
+    return cleaned or out.strip()
 
 
 _RUN_ID_PATTERNS = [
