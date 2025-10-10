@@ -1,10 +1,30 @@
 import os
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from dev.s.posis import posis_watch_multi as pwm
+
+if "requests" not in sys.modules:
+    class _StubSession:
+        def __init__(self):
+            self.headers = {}
+
+        def get(self, *args, **kwargs):  # pragma: no cover - tests never rely on real HTTP
+            raise NotImplementedError("HTTP interactions are stubbed in unit tests")
+
+        def post(self, *args, **kwargs):  # pragma: no cover
+            raise NotImplementedError("HTTP interactions are stubbed in unit tests")
+
+        def delete(self, *args, **kwargs):  # pragma: no cover
+            raise NotImplementedError("HTTP interactions are stubbed in unit tests")
+
+    sys.modules["requests"] = types.SimpleNamespace(Session=_StubSession, HTTPError=Exception)
+
+
+from RepoRelay import watcher as pwm
 
 
 class ParseRemoteTests(unittest.TestCase):
@@ -21,7 +41,7 @@ class ParseRemoteTests(unittest.TestCase):
 
 
 class DiscoverReposTests(unittest.TestCase):
-    @mock.patch("dev.s.posis.posis_watch_multi.subprocess.check_output")
+    @mock.patch("RepoRelay.watcher.subprocess.check_output")
     def test_discover_local_repos_respects_marker(self, mock_check_output):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -29,7 +49,7 @@ class DiscoverReposTests(unittest.TestCase):
             repo_b = root / "repoB"
             (repo_a / ".git").mkdir(parents=True)
             (repo_b / ".git").mkdir(parents=True)
-            (repo_b / ".posis-enabled").touch()
+            (repo_b / ".reporelay-enabled").touch()
 
             def fake_check_output(cmd, text=True):
                 repo_path = Path(cmd[2])
@@ -44,7 +64,7 @@ class DiscoverReposTests(unittest.TestCase):
             repos = pwm.discover_local_repos(root, recursive=False, require_marker=True, exclude_dirs=[])
             self.assertEqual(repos, {"owner/repo-b": repo_b})
 
-    @mock.patch("dev.s.posis.posis_watch_multi.subprocess.check_output")
+    @mock.patch("RepoRelay.watcher.subprocess.check_output")
     def test_discover_local_repos_recursive_respects_exclude(self, mock_check_output):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -173,14 +193,14 @@ class CommandSelectionTests(unittest.TestCase):
 
 class ConfigTests(unittest.TestCase):
     def test_invalid_match_target_exits(self):
-        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "token", "POSIS_MATCH_TARGET": "nope"}, clear=True):
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "token", "REPORELAY_MATCH_TARGET": "nope"}, clear=True):
             with self.assertRaises(SystemExit):
                 pwm.Config.from_env()
 
     def test_negative_per_repo_pause_clamped(self):
         with mock.patch.dict(
             os.environ,
-            {"GITHUB_TOKEN": "token", "POSIS_PER_REPO_PAUSE": "-5"},
+            {"GITHUB_TOKEN": "token", "REPORELAY_PER_REPO_PAUSE": "-5"},
             clear=True,
         ):
             cfg = pwm.Config.from_env()
@@ -189,7 +209,7 @@ class ConfigTests(unittest.TestCase):
     def test_ignore_self_flag(self):
         with mock.patch.dict(
             os.environ,
-            {"GITHUB_TOKEN": "token", "POSIS_IGNORE_SELF": "0"},
+            {"GITHUB_TOKEN": "token", "REPORELAY_IGNORE_SELF": "0"},
             clear=True,
         ):
             cfg = pwm.Config.from_env()
@@ -212,6 +232,52 @@ class PostprocessStdoutTests(unittest.TestCase):
         raw = "Hello world"
         trimmed = pwm.postprocess_stdout(raw, "other")
         self.assertEqual(trimmed, raw)
+
+
+class WatermarkComputationTests(unittest.TestCase):
+    def test_compute_new_since_uses_latest_timestamp(self):
+        previous = "2025-10-01T00:00:00Z"
+        comments = [{"created_at": "2025-10-08T12:00:00Z"}]
+        issues = [{"updated_at": "2025-10-09T05:00:00Z"}]
+        result = pwm._compute_new_since(previous, (comments, issues))
+        self.assertEqual(result, "2025-10-09T05:00:00Z")
+
+    def test_compute_new_since_falls_back_when_empty(self):
+        previous = "2025-10-01T00:00:00Z"
+        result = pwm._compute_new_since(previous, ())
+        self.assertEqual(result, previous)
+
+    def test_compute_new_since_uses_comment_when_issues_missing(self):
+        previous = "2025-10-01T00:00:00Z"
+        comments = [{"created_at": "2025-10-02T00:00:00Z"}]
+        result = pwm._compute_new_since(previous, (comments,))
+        self.assertEqual(result, "2025-10-02T00:00:00Z")
+
+
+class SubprocessEnvTests(unittest.TestCase):
+    def test_build_subprocess_env_scrubs_github_token(self):
+        with mock.patch.dict(
+            os.environ,
+            {"PATH": "/bin", "GITHUB_TOKEN": "secret", "REPORELAY_FORWARD_GITHUB_TOKEN": "0"},
+            clear=True,
+        ):
+            env = pwm._build_subprocess_env(Path("/tmp/work"))
+            self.assertNotIn("GITHUB_TOKEN", env)
+            self.assertEqual(env["PATH"], "/bin")
+            self.assertEqual(env["PWD"], "/tmp/work")
+
+    def test_build_subprocess_env_can_forward_token(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PATH": "/bin",
+                "GITHUB_TOKEN": "secret",
+                "REPORELAY_FORWARD_GITHUB_TOKEN": "1",
+            },
+            clear=True,
+        ):
+            env = pwm._build_subprocess_env(Path("/tmp/work"))
+            self.assertEqual(env.get("GITHUB_TOKEN"), "secret")
 
 
 if __name__ == "__main__":

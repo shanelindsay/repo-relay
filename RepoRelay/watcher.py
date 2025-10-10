@@ -1,57 +1,15 @@
 #!/usr/bin/env python3
 """
-POSIS GitHub Issue Watcher (Multi-Repo)
----------------------------------------
+RepoRelay GitHub Conversation Watcher (Multi-Repo)
+-------------------------------------------------
 Watches *multiple* GitHub repositories found under a local root folder.
-For each repo, it polls issue comments since the last watermark and looks
+For each repo, it polls issue/PR comments since the last watermark and looks
 for a regex trigger in the comment text. When matched, it collects the full
-issue context, optionally includes a "parent issue", runs an external command
-(e.g., "codex exec -") with the context as stdin **in that repo's
-working directory**, and posts the result back to the issue as a comment.
+context, optionally includes a "parent" issue, runs an external command
+(e.g., "codex exec -") with the context on stdin **in that repo's working directory**, and
+posts the result back to the conversation as a comment.
 
-Key differences vs the single-repo watcher:
-- Discovers repos by scanning a root folder for git repositories.
-- Maintains per-repo state (watermarks, processed comment IDs).
-- Runs the external command with cwd set to the repo's local path.
-- Regex-based trigger (POSIS_REGEX), case-insensitive by default.
-
-Environment variables
-----------------------
-GITHUB_TOKEN         : Personal access token with repo scope (classic) or fine-grained with issues:read/write.
-POSIS_ROOT           : Local root directory that contains subfolders with git repos. Default: current working dir.
-POSIS_RECURSIVE      : "1" to discover repos recursively, else only immediate children. Default: "0".
-POSIS_REGEX          : Regex to match in issue comments (case-insensitive). Default: r"codexe".
-POSIS_MATCH_TARGET   : "comments" (default) or "issue_or_comments" to also inspect issue titles/bodies.
-POSIS_POLL_SECONDS   : Poll interval in seconds. Default: 20.
-POSIS_PER_REPO_PAUSE : Seconds to sleep between repos each loop. Default: 0.3.
-POSIS_STATE          : Path to state file (json). Default: '<POSIS_ROOT>/.posis_state_multi.json'.
-CODEX_CMD            : Path to external command to run. Default: 'codex'.
-CODEX_ARGS           : Args for the external command. Default: 'exec -'.
-CODEX_TIMEOUT        : Seconds before the external command is killed. Default: 3600.
-POSIS_LOCKFILE       : Path to a lock file to prevent multiple concurrent watchers. Default: '<POSIS_ROOT>/.posis_multi.lock'.
-
-Optional quality-of-life toggles
---------------------------------
-POSIS_REQUIRE_MARKER : If set to "1", only watch repos that contain a file named '.posis-enabled'. Default: "0".
-POSIS_EXCLUDE_DIRS   : Comma-separated directory names to skip during discovery (e.g., 'venv,node_modules'). Default: "".
-POSIS_IGNORE_SELF    : If "1" (default) skip comments authored by the authenticated account; set "0" to allow self-triggers.
-
-Usage
------
-$ export GITHUB_TOKEN=ghp_xxx
-$ export POSIS_ROOT=/path/to/upper-level
-$ ./posis_watch_multi.py
-
-Or run via tmux:
-$ chmod +x tmux-start-multi.sh posis_watch_multi.py
-$ ./tmux-start-multi.sh
-$ tmux attach -t posis
-
-Notes
------
-- This script polls rather than using webhooks, by design (tmux-friendly).
-- Stores per-repo state to survive restarts.
-- Ignores its own comments (i.e., comments authored by the authenticated account).
+Environment is controlled exclusively via `REPORELAY_*` variables.
 """
 
 import datetime as _dt
@@ -65,27 +23,60 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import requests
 
 ISO8601 = "%Y-%m-%dT%H:%M:%SZ"
 
+
+def _env(key: str, default: str = "") -> str:
+    env_key = f"REPORELAY_{key}"
+    return os.environ.get(env_key, default)
+
+
+def _env_flag(key: str, default: bool) -> bool:
+    raw = _env(key, "1" if default else "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _strip_ansi(text: str) -> str:
+    if not text:
+        return text
+    return _ANSI_RE.sub("", text)
+
+
+def _compute_new_since(previous: str, batches: Iterable[Iterable[dict]]) -> str:
+    """Return the latest timestamp seen across batches, falling back to previous."""
+    candidates = [previous]
+    for batch in batches:
+        for item in batch:
+            for key in ("updated_at", "created_at"):
+                ts = item.get(key)
+                if ts:
+                    candidates.append(ts)
+    try:
+        return max(candidates)
+    except ValueError:
+        return previous
+
+
 def _now_utc() -> str:
     return _dt.datetime.utcnow().strftime(ISO8601)
+
 
 def _iso(dt: _dt.datetime) -> str:
     return dt.strftime(ISO8601)
 
+
 def _parse_iso(s: str) -> _dt.datetime:
     return _dt.datetime.strptime(s, ISO8601)
 
+
 def _build_subprocess_env(cwd: Path) -> Dict[str, str]:
     env = dict(os.environ)
-
-    if env.get("POSIS_FORWARD_GITHUB_TOKEN") != "1":
+    if env.get("REPORELAY_FORWARD_GITHUB_TOKEN") != "1":
         env.pop("GITHUB_TOKEN", None)
-
     env["PWD"] = str(cwd)
     return env
 
@@ -111,18 +102,14 @@ def parse_github_owner_repo(remote_url: str) -> Optional[str]:
     return f"{m.group('owner')}/{m.group('repo')}"
 
 def discover_local_repos(root: Path, recursive: bool, require_marker: bool, exclude_dirs: List[str]) -> Dict[str, Path]:
-    """
-    Scan 'root' for git repositories and return { 'owner/repo': local_path }.
-    If recursive is False, only direct subdirectories are considered.
-    If require_marker is True, only repos containing '.posis-enabled' are included.
-    """
+    """Scan ``root`` for git repositories and return ``{owner/repo: path}``."""
     repos: Dict[str, Path] = {}
 
     def consider_dir(d: Path):
         if not (d / ".git").exists():
             return
         # optional marker gate
-        if require_marker and not (d / ".posis-enabled").exists():
+        if require_marker and not (d / ".reporelay-enabled").exists():
             return
         remote = discover_git_remote(d)
         if not remote:
@@ -157,31 +144,31 @@ def discover_local_repos(root: Path, recursive: bool, require_marker: bool, excl
 class Config:
     token: str
     root: Path
-    recursive: bool = field(default_factory=lambda: os.getenv("POSIS_RECURSIVE", "0") == "1")
-    regex: str = field(default_factory=lambda: os.getenv("POSIS_REGEX", r"codexe"))
-    match_target: str = field(default_factory=lambda: os.getenv("POSIS_MATCH_TARGET", "comments"))
-    poll_seconds: int = field(default_factory=lambda: int(os.getenv("POSIS_POLL_SECONDS", "20")))
-    per_repo_pause: float = field(default_factory=lambda: float(os.getenv("POSIS_PER_REPO_PAUSE", "0.3")))
+    recursive: bool = field(default_factory=lambda: _env_flag("RECURSIVE", False))
+    regex: str = field(default_factory=lambda: _env("REGEX", r"codexe"))
+    match_target: str = field(default_factory=lambda: _env("MATCH_TARGET", "comments"))
+    poll_seconds: int = field(default_factory=lambda: int(_env("POLL_SECONDS", "20")))
+    per_repo_pause: float = field(default_factory=lambda: float(_env("PER_REPO_PAUSE", "0.3")))
     state_path: Path = field(default=None)
     codex_cmd: str = field(default_factory=lambda: os.getenv("CODEX_CMD", "codex"))
     codex_args: List[str] = field(default_factory=lambda: os.getenv("CODEX_ARGS", "exec -").split())
     codex_resume_args: List[str] = field(default_factory=lambda: os.getenv("CODEX_RESUME_ARGS", "resume").split())
     codex_timeout: int = field(default_factory=lambda: int(os.getenv("CODEX_TIMEOUT", "3600")))
     lockfile: Path = field(default=None)
-    require_marker: bool = field(default_factory=lambda: os.getenv("POSIS_REQUIRE_MARKER", "0") == "1")
-    exclude_dirs: List[str] = field(default_factory=lambda: [s for s in os.getenv("POSIS_EXCLUDE_DIRS", "").split(",") if s])
-    ignore_self: bool = field(default_factory=lambda: os.getenv("POSIS_IGNORE_SELF", "1") == "1")
-    default_resume: bool = field(default_factory=lambda: os.getenv("POSIS_DEFAULT_RESUME", "1") == "1")
-    resume_send_context: bool = field(default_factory=lambda: os.getenv("POSIS_RESUME_SEND_CONTEXT", "0") == "1")
+    require_marker: bool = field(default_factory=lambda: _env_flag("REQUIRE_MARKER", False))
+    exclude_dirs: List[str] = field(default_factory=lambda: [s for s in _env("EXCLUDE_DIRS", "").split(",") if s])
+    ignore_self: bool = field(default_factory=lambda: _env_flag("IGNORE_SELF", True))
+    default_resume: bool = field(default_factory=lambda: _env_flag("DEFAULT_RESUME", True))
+    resume_send_context: bool = field(default_factory=lambda: _env_flag("RESUME_SEND_CONTEXT", False))
 
     def __post_init__(self):
         if self.state_path is None:
-            self.state_path = self.root / ".posis_state_multi.json"
+            self.state_path = self.root / ".reporelay_state.json"
         if self.lockfile is None:
-            self.lockfile = self.root / ".posis_multi.lock"
+            self.lockfile = self.root / ".reporelay.lock"
         self.match_target = self.match_target.lower()
         if self.match_target not in {"comments", "issue_or_comments"}:
-            sys.exit("POSIS_MATCH_TARGET must be 'comments' or 'issue_or_comments'.")
+            sys.exit("REPORELAY_MATCH_TARGET must be 'comments' or 'issue_or_comments'.")
         if self.per_repo_pause < 0:
             self.per_repo_pause = 0.0
 
@@ -190,7 +177,7 @@ class Config:
         token = os.getenv("GITHUB_TOKEN", "").strip()
         if not token:
             sys.exit("GITHUB_TOKEN is required in environment.")
-        root = Path(os.getenv("POSIS_ROOT", os.getcwd())).resolve()
+        root = Path(_env("ROOT", os.getcwd())).resolve()
         return Config(token=token, root=root)
 
 class GitHub:
@@ -199,7 +186,7 @@ class GitHub:
         self.session.headers.update({
             "Authorization": f"token {token}",
             "Accept": "application/vnd.github+json",
-            "User-Agent": "posis-watcher-multi/1.0",
+            "User-Agent": "reporelay/1.0",
         })
         self.api = "https://api.github.com"
         self._me = None
@@ -302,7 +289,7 @@ class GitHub:
             "Content-Type": "application/json",
         }
         r = self.session.post(url, json={"content": content}, headers=headers, timeout=30)
-        log = logging.getLogger("posis-multi")
+        log = logging.getLogger("reporelay")
         log.info("Reaction response for %s comment %s: %s", repo, comment_id, r.status_code)
         if r.status_code in (200, 201):
             return True
@@ -370,7 +357,7 @@ class SingleInstanceLock:
             self.fd.write(str(os.getpid()))
             self.fd.flush()
         except BlockingIOError:
-            sys.exit(f"Another posis_watch_multi.py instance is running (lock: {self.path}).")
+            sys.exit(f"Another RepoRelay watcher instance is running (lock: {self.path}).")
 
     def release(self):
         if not self.fd:
@@ -569,7 +556,7 @@ def main():
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
-    log = logging.getLogger("posis-multi")
+    log = logging.getLogger("reporelay")
 
     # Single-instance lock
     lock = SingleInstanceLock(cfg.lockfile)
@@ -587,14 +574,14 @@ def main():
     log.info("Scanning for git repos under %s (recursive=%s)", cfg.root, cfg.recursive)
     repos = discover_local_repos(cfg.root, cfg.recursive, cfg.require_marker, cfg.exclude_dirs)
     if not repos:
-        log.warning("No repos found. Create a git repo under %s or adjust POSIS_ROOT.", cfg.root)
+        log.warning("No repos found. Create a git repo under %s or adjust REPORELAY_ROOT/REPORELAY_ROOT.", cfg.root)
 
     # Compile regex trigger (case-insensitive)
     try:
         trigger_re = re.compile(cfg.regex, re.I)
     except re.error as e:
         lock.release()
-        sys.exit(f"Invalid POSIS_REGEX '{cfg.regex}': {e}")
+        sys.exit(f"Invalid REPORELAY_REGEX '{cfg.regex}': {e}")
 
     gh = GitHub(cfg.token)
     me = gh.me_login()

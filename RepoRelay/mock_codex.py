@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal stub command for POSIS watcher tests."""
+"""Minimal stub command for RepoRelay watcher tests."""
 import sys
 
 MESSAGE = "## Result\nWatcher stub completed successfully."

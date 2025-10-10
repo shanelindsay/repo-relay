@@ -2,9 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
-SESSION="${SESSION:-posis}"
-RUNNER="${SCRIPT_DIR}/run-multi.sh"
+SESSION="${REPORELAY_SESSION:-reporelay}"
+RUNNER="${SCRIPT_DIR}/run-reporelay.sh"
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "Session '$SESSION' already exists. Attach with: tmux attach -t $SESSION"
