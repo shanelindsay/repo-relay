@@ -695,6 +695,51 @@ def _dispatch_pr_opened(gh: GitHub, cfg: Config, hub_repo: str, run_id: str, pr_
         logging.getLogger("reporelay").warning("Failed to dispatch pr_opened: %r", e)
 
 
+def _logger_env_for_cli() -> Dict[str, str]:
+    env = dict(os.environ)
+    # The logger script expects GH_TOKEN or GITHUB_TOKEN; prefer GH_TOKEN
+    tok = env.get("GITHUB_TOKEN", "")
+    if tok:
+        env.setdefault("GH_TOKEN", tok)
+    return env
+
+
+def _cli_project_start(local_path: Path, title: str, body: str, run_id: str, branch: str, repo: str) -> Optional[str]:
+    script = Path.cwd() / "scripts" / "project-logger.sh"
+    if not script.exists():
+        return None
+    try:
+        cmd = ["bash", str(script), "start", "--title", title, "--body", body, "--run-id", run_id]
+        if branch:
+            cmd += ["--branch", branch]
+        if repo:
+            cmd += ["--repo", repo]
+        out = subprocess.check_output(cmd, cwd=str(Path.cwd()), env=_logger_env_for_cli(), text=True)
+        return out.strip() or None
+    except Exception:
+        return None
+
+
+def _cli_project_finish(item_id: Optional[str], run_id: Optional[str], status: str, tokens_total: Optional[int] = None):
+    script = Path.cwd() / "scripts" / "project-logger.sh"
+    if not script.exists():
+        return
+    try:
+        if item_id:
+            cmd = ["bash", str(script), "finish", "--item-id", item_id, "--status", status, "--start-ts", "now", "--end-ts", "now"]
+        elif run_id:
+            # Attempt lookup by Run ID via gh CLI and finish
+            # Fallback: skip silently
+            return
+        else:
+            return
+        if tokens_total is not None:
+            cmd += ["--tokens-total", str(tokens_total)]
+        subprocess.run(cmd, cwd=str(Path.cwd()), env=_logger_env_for_cli(), check=False, text=True, capture_output=True)
+    except Exception:
+        return
+
+
 def extract_intent(text: str) -> Tuple[str, Optional[str]]:
     """Infer trigger intent from comment text."""
     snippet = text or ""
@@ -899,11 +944,12 @@ def main():
                         local_path,
                     )
 
-                    # dispatch start
+                    # dispatch start (hub) and local CLI project logging
                     try:
                         _dispatch_start(gh, cfg, local_path, cfg.dispatch_repo, run_id, repo, number, issue.get("title", ""), body)
                     except Exception:
                         pass
+                    project_item_id = _cli_project_start(local_path, f"{repo}#{number}", "run started", run_id, _git_current_branch(local_path), repo)
 
                     rc, out, err = run_external(
                         cfg.codex_cmd,
@@ -958,6 +1004,8 @@ def main():
                     )
                     if codex_id:
                         new_state["codex_run_id"] = codex_id
+                    if project_item_id:
+                        new_state["project_item_id"] = project_item_id
                     runs_store[str(number)] = new_state
 
                     # dispatch finish
@@ -965,6 +1013,7 @@ def main():
                         _dispatch_finish(gh, cfg, cfg.dispatch_repo, run_id, ok, start_ts=issue.get("created_at", _now_utc()), end_ts=_now_utc())
                     except Exception:
                         pass
+                    _cli_project_finish(new_state.get("project_item_id"), run_id, "Done" if ok else "Failed")
 
                     processed_comments.append(cid)
                     processed.add(cid)
@@ -1080,11 +1129,11 @@ def main():
                         local_path,
                     )
 
-                        # dispatch start for review
-                        try:
-                            _dispatch_start(gh, cfg, local_path, cfg.dispatch_repo, run_id, repo, number, issue.get("title", ""), body)
-                        except Exception:
-                            pass
+                    # dispatch start for review
+                    try:
+                        _dispatch_start(gh, cfg, local_path, cfg.dispatch_repo, run_id, repo, number, issue.get("title", ""), body)
+                    except Exception:
+                        pass
 
                     # pr_opened dispatch
                     try:
