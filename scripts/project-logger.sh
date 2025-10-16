@@ -122,23 +122,17 @@ now_date() { date -u +%F; }
 to_epoch() { [[ "$1" == "now" ]] && date -u +%s || date -u -d "@$1" +%s 2>/dev/null || date -u -d "$1" +%s; }
 
 cmd_start() {
-  local title="" body="" out_file="" run_id="" model="" branch="" repo=""
+  local title="" body="" out_file="" run_id="" branch="" repo=""
   while [[ $# -gt 0 ]]; do case "$1" in
     --title) title="$2"; shift 2;;
     --body) body="$2"; shift 2;;
     --out) out_file="$2"; shift 2;;
     --run-id) run_id="$2"; shift 2;;
-    --model) model="$2"; shift 2;;
     --branch) branch="$2"; shift 2;;
     --repo) repo="$2"; shift 2;;
     *) echo "Unknown arg: $1" >&2; exit 2;;
   esac; done
   [[ -n "$title" ]] || { echo "--title is required" >&2; exit 2; }
-
-  # default model if not provided
-  if [[ -z "$model" ]]; then
-    model="${PROJECT_DEFAULT_MODEL:-gpt-5-codex}"
-  fi
 
   local item_json item_id pid
   pid=$(gh_project_id)
@@ -149,7 +143,6 @@ cmd_start() {
   set_status "$item_id" "In progress"
   set_date_field "$item_id" "Start date" "$(now_date)"
   [[ -n "$run_id" ]] && set_text_field "$item_id" "Run ID" "$run_id"
-  [[ -n "$model" ]] && set_text_field "$item_id" "Model" "$model"
   [[ -n "$branch" ]] && set_text_field "$item_id" "Branch" "$branch"
   # Built-in Repository field is not API-editable; skip to avoid GraphQL errors
 
@@ -187,28 +180,21 @@ cmd_pr() {
 
 cmd_finish() {
   local item_id="" status="Done" tokens_total="" start_ts="" end_ts="now"
-  local model="" run_id=""
+  local run_id=""
   while [[ $# -gt 0 ]]; do case "$1" in
     --item-id) item_id="$2"; shift 2;;
     --status) status="$2"; shift 2;;
     --tokens-total) tokens_total="$2"; shift 2;;
     --start-ts) start_ts="$2"; shift 2;;
     --end-ts) end_ts="$2"; shift 2;;
-    --model) model="$2"; shift 2;;
     --run-id) run_id="$2"; shift 2;;
     *) echo "Unknown arg: $1" >&2; exit 2;;
   esac; done
   [[ -n "$item_id" ]] || { echo "--item-id required" >&2; exit 2; }
 
-  # default model if not provided
-  if [[ -z "$model" ]]; then
-    model="${PROJECT_DEFAULT_MODEL:-gpt-5-codex}"
-  fi
-
   set_status "$item_id" "$status"
   set_date_field "$item_id" "End date" "$(now_date)"
   [[ -n "$tokens_total" ]] && set_number_field "$item_id" "Tokens total" "$tokens_total"
-  [[ -n "$model" ]] && set_text_field "$item_id" "Model" "$model"
   [[ -n "$run_id" ]] && set_text_field "$item_id" "Run ID" "$run_id"
 
   # Duration minutes if timestamps provided

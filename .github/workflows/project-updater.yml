@@ -39,14 +39,12 @@ jobs:
               title=${{ toJson(github.event.client_payload.title) }}
               body=${{ toJson(github.event.client_payload.body) }}
               run_id=${{ toJson(github.event.client_payload.run_id) }}
-              model=${{ toJson(github.event.client_payload.model) }}
               branch=${{ toJson(github.event.client_payload.branch) }}
               repo=${{ toJson(github.event.client_payload.repo) }}
               item_id=$(scripts/project-logger.sh start \
                 --title "${title:1:-1}" \
                 --body "${body:1:-1}" \
                 --run-id "${run_id:1:-1}" \
-                --model "${model:1:-1}" \
                 --branch "${branch:1:-1}" \
                 --repo "${repo:1:-1}")
               echo "item_id=$item_id" >> "$GITHUB_OUTPUT"
@@ -74,7 +72,6 @@ jobs:
                 --tokens-total "${{ github.event.client_payload.tokens_total }}" \
                 --start-ts "${{ github.event.client_payload.start_ts }}" \
                 --end-ts "${{ github.event.client_payload.end_ts }}" \
-                --model "${{ github.event.client_payload.model }}" \
                 --run-id "${{ github.event.client_payload.run_id }}"
               ;;
             task_failed)
@@ -86,7 +83,6 @@ jobs:
                 --tokens-total "${{ github.event.client_payload.tokens_total }}" \
                 --start-ts "${{ github.event.client_payload.start_ts }}" \
                 --end-ts "${{ github.event.client_payload.end_ts }}" \
-                --model "${{ github.event.client_payload.model }}" \
                 --run-id "${{ github.event.client_payload.run_id }}"
               ;;
             *) echo "Unhandled action"; exit 1 ;;
