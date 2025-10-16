@@ -533,11 +533,6 @@ def run_external(codex_cmd: str, codex_args: List[str], payload: Optional[str], 
         )
         out = proc.stdout.decode("utf-8", errors="replace")
         err = proc.stderr.decode("utf-8", errors="replace")
-        max_chars = 60000
-        if len(out) > max_chars:
-            out = out[:max_chars] + "\n\n[output truncated]"
-        if len(err) > max_chars:
-            err = err[:max_chars] + "\n\n[stderr truncated]"
         return proc.returncode, out, err
     except subprocess.TimeoutExpired:
         return 124, "", f"Process timed out after {timeout}s."
@@ -624,6 +619,32 @@ def postprocess_stdout(out: str, codex_cmd: str) -> str:
     return cleaned or out.strip()
 
 
+def _split_for_github_comments(text: str, limit: int = 65000) -> List[str]:
+    if not text:
+        return [""]
+    if len(text) <= limit:
+        return [text]
+    parts: List[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        cut = remaining.rfind("\n\n", 0, limit)
+        if cut == -1:
+            cut = limit
+        chunk = remaining[:cut].rstrip()
+        parts.append(chunk)
+        remaining = remaining[cut:].lstrip()
+    if remaining:
+        parts.append(remaining)
+    return parts
+
+
+def _post_long_comment(gh: GitHub, repo: str, number: int, body: str) -> None:
+    chunks = _split_for_github_comments(body)
+    for idx, chunk in enumerate(chunks, 1):
+        suffix = f"\n\n(part {idx}/{len(chunks)})" if len(chunks) > 1 else ""
+        gh.post_issue_comment(repo, number, chunk + suffix)
+
+
 _RUN_ID_PATTERNS = [
     re.compile(r"(?im)\b(?:run[ _-]?id|session)\s*[:=]\s*([A-Za-z0-9._-]{6,})"),
     re.compile(r"(?im)\bresume\s+with:?\s*codex\s+resume\s+([A-Za-z0-9._-]{6,})"),
@@ -701,6 +722,9 @@ def _logger_env_for_cli() -> Dict[str, str]:
     tok = env.get("GITHUB_TOKEN", "")
     if tok:
         env.setdefault("GH_TOKEN", tok)
+    # ensure common binary path where gh may live
+    hp = str(Path.home() / "bin")
+    env["PATH"] = env.get("PATH", "") + (":" + hp if hp not in env.get("PATH", "") else "")
     return env
 
 
@@ -975,7 +999,7 @@ def main():
                             log.warning("Failed to add reaction to %s %s comment %s: %r", repo, conversation_type, cid, e)
 
                     try:
-                        gh.post_issue_comment(repo, number, comment_body)
+                        _post_long_comment(gh, repo, number, comment_body)
                     except requests.HTTPError as e:
                         log.error("Failed to post comment to %s#%d: %s", repo, number, e)
                     except Exception as e:
@@ -1168,7 +1192,7 @@ def main():
                             log.warning("Failed to add reaction to %s review comment %s: %r", repo, rcid, e)
 
                     try:
-                        gh.post_issue_comment(repo, number, comment_body)
+                        _post_long_comment(gh, repo, number, comment_body)
                     except requests.HTTPError as e:
                         log.error(
                             "Failed to post comment to %s#%d (review trigger): %s",
@@ -1314,7 +1338,7 @@ def main():
                         codex_id = extract_codex_run_id(combined) or (resume_target if resume_flag else None)
 
                         try:
-                            gh.post_issue_comment(repo, number, comment_body)
+                            _post_long_comment(gh, repo, number, comment_body)
                         except requests.HTTPError as e:
                             log.error(
                                 "Failed to post comment to %s#%d (%s trigger): %s",
