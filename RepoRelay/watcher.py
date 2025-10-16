@@ -179,6 +179,10 @@ class Config:
     ignore_self: bool = field(default_factory=lambda: _env_flag("IGNORE_SELF", False))
     default_resume: bool = field(default_factory=lambda: _env_flag("DEFAULT_RESUME", True))
     resume_send_context: bool = field(default_factory=lambda: _env_flag("RESUME_SEND_CONTEXT", False))
+    # Projects logging / repository_dispatch integration
+    projects_enable: bool = field(default_factory=lambda: _env_flag("PROJECTS_ENABLE", False))
+    dispatch_repo: str = field(default_factory=lambda: _env("DISPATCH_REPO", ""))
+    default_model: str = field(default_factory=lambda: os.getenv("PROJECT_DEFAULT_MODEL", "gpt-5-codex"))
 
     def __post_init__(self):
         if self.state_path is None:
@@ -327,6 +331,13 @@ class GitHub:
         )
         r.raise_for_status()
         return r.json()
+
+    def repository_dispatch(self, repo: str, event_type: str, payload: dict) -> None:
+        url = f"{self.api}/repos/{repo}/dispatches"
+        r = self.session.post(url, json={"event_type": event_type, "client_payload": payload}, timeout=30)
+        # 204 No Content is expected
+        if r.status_code not in (200, 201, 202, 204):
+            r.raise_for_status()
 
     def add_reaction_to_comment(self, repo: str, comment_id: int, content: str) -> bool:
         url = f"{self.api}/repos/{repo}/issues/comments/{comment_id}/reactions"
@@ -630,6 +641,50 @@ def extract_codex_run_id(text: str) -> Optional[str]:
     return None
 
 
+def _git_current_branch(cwd: Path) -> str:
+    try:
+        ref = subprocess.check_output(["git", "-C", str(cwd), "rev-parse", "--abbrev-ref", "HEAD"], text=True).strip()
+        return ref or ""
+    except Exception:
+        return ""
+
+
+def _dispatch_start(gh: GitHub, cfg: Config, local_path: Path, hub_repo: str, run_id: str, repo: str, number: int, title: str, body_preview: str):
+    if not cfg.projects_enable or not hub_repo:
+        return
+    payload = {
+        "title": f"{title}",
+        "body": (body_preview or "")[:400],
+        "run_id": run_id,
+        "model": cfg.default_model,
+        "branch": _git_current_branch(local_path),
+        "repo": repo,
+        "issue_number": number,
+    }
+    try:
+        gh.repository_dispatch(hub_repo, "task_started", payload)
+    except Exception as e:
+        logging.getLogger("reporelay").warning("Failed to dispatch task_started: %r", e)
+
+
+def _dispatch_finish(gh: GitHub, cfg: Config, hub_repo: str, run_id: str, ok: bool, start_ts: str, end_ts: str, tokens_total: Optional[int] = None):
+    if not cfg.projects_enable or not hub_repo:
+        return
+    event = "task_done" if ok else "task_failed"
+    payload = {
+        "run_id": run_id,
+        "model": cfg.default_model,
+        "start_ts": start_ts,
+        "end_ts": end_ts,
+    }
+    if tokens_total is not None:
+        payload["tokens_total"] = tokens_total
+    try:
+        gh.repository_dispatch(hub_repo, event, payload)
+    except Exception as e:
+        logging.getLogger("reporelay").warning("Failed to dispatch %s: %r", event, e)
+
+
 def extract_intent(text: str) -> Tuple[str, Optional[str]]:
     """Infer trigger intent from comment text."""
     snippet = text or ""
@@ -834,6 +889,12 @@ def main():
                         local_path,
                     )
 
+                    # dispatch start
+                    try:
+                        _dispatch_start(gh, cfg, local_path, cfg.dispatch_repo, run_id, repo, number, issue.get("title", ""), body)
+                    except Exception:
+                        pass
+
                     rc, out, err = run_external(
                         cfg.codex_cmd,
                         args,
@@ -888,6 +949,12 @@ def main():
                     if codex_id:
                         new_state["codex_run_id"] = codex_id
                     runs_store[str(number)] = new_state
+
+                    # dispatch finish
+                    try:
+                        _dispatch_finish(gh, cfg, cfg.dispatch_repo, run_id, ok, start_ts=issue.get("created_at", _now_utc()), end_ts=_now_utc())
+                    except Exception:
+                        pass
 
                     processed_comments.append(cid)
                     processed.add(cid)
@@ -1003,13 +1070,19 @@ def main():
                         local_path,
                     )
 
-                    rc_status, out, err = run_external(
-                        cfg.codex_cmd,
-                        args,
-                        payload_to_send,
-                        cfg.codex_timeout,
-                        cwd=local_path,
-                    )
+                        # dispatch start for review
+                        try:
+                            _dispatch_start(gh, cfg, local_path, cfg.dispatch_repo, run_id, repo, number, issue.get("title", ""), body)
+                        except Exception:
+                            pass
+
+                        rc_status, out, err = run_external(
+                            cfg.codex_cmd,
+                            args,
+                            payload_to_send,
+                            cfg.codex_timeout,
+                            cwd=local_path,
+                        )
                     processed_out = postprocess_stdout(out, cfg.codex_cmd)
 
                     ok = (rc_status == 0) and bool(processed_out.strip())
@@ -1044,6 +1117,12 @@ def main():
                             number,
                             e,
                         )
+
+                    # dispatch finish
+                    try:
+                        _dispatch_finish(gh, cfg, cfg.dispatch_repo, run_id, ok, start_ts=issue.get("created_at", _now_utc()), end_ts=_now_utc())
+                    except Exception:
+                        pass
 
                     meta.setdefault("runs", {})[str(number)] = {
                         "status": "ok" if ok else "error",
@@ -1148,6 +1227,12 @@ def main():
                             local_path,
                         )
 
+                        # dispatch start for issue/PR body/title trigger
+                        try:
+                            _dispatch_start(gh, cfg, local_path, cfg.dispatch_repo, run_id, repo, number, issue.get("title", ""), trigger_comment.get("body", ""))
+                        except Exception:
+                            pass
+
                         rc, out, err = run_external(
                             cfg.codex_cmd,
                             args,
@@ -1205,6 +1290,12 @@ def main():
                             conversation_record["codex_run_id"] = codex_id
 
                         runs_store[str(number)] = conversation_record
+
+                        # dispatch finish
+                        try:
+                            _dispatch_finish(gh, cfg, cfg.dispatch_repo, run_id, ok, start_ts=issue.get("created_at", _now_utc()), end_ts=_now_utc())
+                        except Exception:
+                            pass
 
                         st.save()
 
