@@ -28,6 +28,12 @@ jobs:
         run: |
           set -euo pipefail
           echo "Event: ${{ github.event.action }}"
+          resolve_by_run_id() {
+            local rid="$1"
+            if [[ -z "$rid" ]]; then echo ""; return; fi
+            gh project item-list "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --format json \
+              | jq -r --arg RID "$rid" '.items[] | select((."run ID"//"")==$RID) | .id' | head -n1
+          }
           case "${{ github.event.action }}" in
             task_started)
               title=${{ toJson(github.event.client_payload.title) }}
@@ -46,18 +52,24 @@ jobs:
               echo "item_id=$item_id" >> "$GITHUB_OUTPUT"
               ;;
             task_link_issue)
+              iid="${{ github.event.client_payload.item_id }}"
+              [[ -z "$iid" ]] && iid="$(resolve_by_run_id "${{ github.event.client_payload.run_id }}")"
               scripts/project-logger.sh link \
-                --item-id "${{ github.event.client_payload.item_id }}" \
+                --item-id "$iid" \
                 --issue-url "${{ github.event.client_payload.issue_url }}"
               ;;
             pr_opened)
+              iid="${{ github.event.client_payload.item_id }}"
+              [[ -z "$iid" ]] && iid="$(resolve_by_run_id "${{ github.event.client_payload.run_id }}")"
               scripts/project-logger.sh pr \
-                --item-id "${{ github.event.client_payload.item_id }}" \
+                --item-id "$iid" \
                 --pr-url "${{ github.event.client_payload.pr_url }}"
               ;;
             task_done)
+              iid="${{ github.event.client_payload.item_id }}"
+              [[ -z "$iid" ]] && iid="$(resolve_by_run_id "${{ github.event.client_payload.run_id }}")"
               scripts/project-logger.sh finish \
-                --item-id "${{ github.event.client_payload.item_id }}" \
+                --item-id "$iid" \
                 --status Done \
                 --tokens-total "${{ github.event.client_payload.tokens_total }}" \
                 --start-ts "${{ github.event.client_payload.start_ts }}" \
@@ -66,8 +78,10 @@ jobs:
                 --run-id "${{ github.event.client_payload.run_id }}"
               ;;
             task_failed)
+              iid="${{ github.event.client_payload.item_id }}"
+              [[ -z "$iid" ]] && iid="$(resolve_by_run_id "${{ github.event.client_payload.run_id }}")"
               scripts/project-logger.sh finish \
-                --item-id "${{ github.event.client_payload.item_id }}" \
+                --item-id "$iid" \
                 --status Failed \
                 --tokens-total "${{ github.event.client_payload.tokens_total }}" \
                 --start-ts "${{ github.event.client_payload.start_ts }}" \
