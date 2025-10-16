@@ -118,6 +118,11 @@ cmd_start() {
   esac; done
   [[ -n "$title" ]] || { echo "--title is required" >&2; exit 2; }
 
+  # default model if not provided
+  if [[ -z "$model" ]]; then
+    model="${PROJECT_DEFAULT_MODEL:-gpt-5-codex}"
+  fi
+
   local item_json item_id pid
   pid=$(gh_project_id)
   item_json=$(gh project item-create "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --title "$title" --body "${body}" --format json)
@@ -178,6 +183,11 @@ cmd_finish() {
   esac; done
   [[ -n "$item_id" ]] || { echo "--item-id required" >&2; exit 2; }
 
+  # default model if not provided
+  if [[ -z "$model" ]]; then
+    model="${PROJECT_DEFAULT_MODEL:-gpt-5-codex}"
+  fi
+
   set_status "$item_id" "$status"
   set_date_field "$item_id" "End date" "$(now_date)"
   [[ -n "$tokens_total" ]] && set_number_field "$item_id" "Tokens total" "$tokens_total"
@@ -219,4 +229,3 @@ main() {
 }
 
 main "$@"
-
