@@ -1,0 +1,17 @@
+version: 1
+name: Nightly Dependency Check
+description: Run agent to review dependencies and propose safe updates
+on:
+  schedule:
+    frequency: daily
+    at: '02:00'   # UTC/GMT
+run:
+  model:
+    name: gpt-5-5
+    variant: gpt-5-codecs
+    reasoning: medium
+  repo: owner/repo
+  instructions: |
+    Scan the repository for outdated dependencies.
+    Prepare a concise summary and an update PR if tests pass.
+

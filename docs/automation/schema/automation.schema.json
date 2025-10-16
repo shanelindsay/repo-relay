@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/automation.schema.json",
+  "title": "Automation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "name", "on", "run"],
+  "properties": {
+    "version": {"type": "integer", "const": 1},
+    "name": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "on": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "schedule": {
+          "type": "object",
+          "additionalProperties": false,
+          "oneOf": [
+            {
+              "required": ["cron"],
+              "properties": {
+                "cron": {"type": "string", "minLength": 5}
+              }
+            },
+            {
+              "required": ["frequency"],
+              "properties": {
+                "frequency": {"type": "string", "enum": ["daily", "weekly", "monthly"]},
+                "at": {"type": "string", "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$"},
+                "day_of_week": {"type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]},
+                "day_of_month": {"type": "integer", "minimum": 1, "maximum": 31}
+              },
+              "allOf": [
+                {
+                  "if": {"properties": {"frequency": {"const": "weekly"}}},
+                  "then": {"required": ["day_of_week"]}
+                },
+                {
+                  "if": {"properties": {"frequency": {"const": "monthly"}}},
+                  "then": {"required": ["day_of_month"]}
+                }
+              ]
+            }
+          ]
+        },
+        "github_issue": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "types": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "string", "enum": ["opened", "closed", "reopened", "labeled", "unlabeled"]}
+            }
+          },
+          "required": ["types"]
+        },
+        "pull_request": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "types": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "string", "enum": ["opened", "closed", "reopened", "synchronize", "labeled", "unlabeled"]}
+            },
+            "branches": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1}
+            },
+            "paths": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1}
+            }
+          },
+          "required": ["types"]
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instructions"],
+      "properties": {
+        "model": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {"type": "string", "default": "gpt-5-5"},
+            "variant": {"type": "string", "default": "gpt-5-codecs"},
+            "reasoning": {"type": "string", "enum": ["none", "light", "medium", "deep"], "default": "medium"}
+          }
+        },
+        "repo": {"type": "string", "pattern": "^[^/]+/[^/]+$"},
+        "instructions": {"type": "string", "minLength": 1},
+        "command": {"type": "string", "default": "codex exec -"},
+        "env": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        }
+      }
+    }
+  }
+}
+

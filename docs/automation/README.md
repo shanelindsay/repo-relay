@@ -1,0 +1,119 @@
+# Automation (YAML)
+
+Define lightweight automations as YAML files stored in a repository folder. Each file describes when to trigger and what to run. The orchestrator scans the folder, validates each YAML file, and executes matching automations on events or on a schedule.
+
+- Default folder: `.automations/` (configurable via `AUTOMATIONS_DIR`)
+- File format: YAML v1 schema (see `schema/automation.schema.json`)
+- Purpose: Make it easy to declaratively codify small, repeatable “run the agent with these instructions” tasks without writing code.
+
+## Concepts
+- Trigger: When to run. Supported types: `schedule`, `github_issue`, `pull_request`.
+- Run: What to do when the trigger fires. Typically calls the agent/command with model + instructions in the target repo context.
+- Parameters: Model selection, repo coordinates, free‑text instructions, and optional environment.
+
+## Trigger Types
+- `schedule` — time‑based triggers using UTC (aka GMT). Supports simple frequency or cron.
+  - frequency: `daily` | `weekly` | `monthly`
+  - at: `HH:MM` (24‑hour, default `00:00`)
+  - day_of_week: `mon..sun` (weekly only)
+  - day_of_month: `1..31` (monthly only)
+  - or `cron`: five‑field `minute hour day month dayOfWeek` string
+- `github_issue` — fires on GitHub issue lifecycle events
+  - types: `opened` | `closed` | `reopened` | `labeled` | `unlabeled`
+- `pull_request` — fires on PR lifecycle events
+  - types: `opened` | `closed` | `reopened` | `synchronize` (new commits) | `labeled` | `unlabeled`
+  - optional filters: `branches`, `paths`
+
+## Run Parameters
+- `model` — how the agent runs
+  - `name` (default `gpt-5-5`)
+  - `variant` (default `gpt-5-codecs`)
+  - `reasoning` (default `medium`)
+- `repo` — GitHub repo in `owner/name` form (defaults to the current repo if omitted)
+- `instructions` — free text block with the task to perform
+- `command` — optional override of the runner (default: `codex exec -`)
+- `env` — key/value environment exported to the run (supports simple `${VAR}` interpolation)
+
+Note: Model names here reflect project‑level defaults for this feature, not external service guarantees. Adjust as your runner requires.
+
+## Folder Layout
+```
+.automations/
+  nightly-deps.yaml
+  issue-triage.yaml
+  pr-smoke.yaml
+```
+
+## Example: Nightly task (daily at 02:00 UTC)
+```yaml
+version: 1
+name: Nightly Dependency Check
+description: Run agent to review deps and open PRs if needed
+on:
+  schedule:
+    frequency: daily
+    at: '02:00'   # UTC
+run:
+  model:
+    name: gpt-5-5
+    variant: gpt-5-codecs
+    reasoning: medium
+  repo: owner/repo
+  instructions: |
+    Scan the repository for outdated third‑party dependencies.
+    Generate a summary and prepare changes as a PR when safe.
+```
+
+## Example: Issue‑opened triage
+```yaml
+version: 1
+name: Issue Triage
+description: Label and respond to new issues
+on:
+  github_issue:
+    types: [opened]
+run:
+  repo: owner/repo
+  instructions: |
+    Read the new issue and suggest labels and priority.
+    Ask clarifying questions if details are missing.
+```
+
+## Example: PR synchronize (new commits)
+```yaml
+version: 1
+name: PR Smoke Tests
+description: Re‑run analysis when PR updates
+on:
+  pull_request:
+    types: [synchronize]
+    branches: [main]
+run:
+  repo: owner/repo
+  instructions: |
+    Re‑evaluate the latest changes and comment with any failures
+    or risky diffs. Keep feedback concise and actionable.
+```
+
+## Validation
+- JSON Schema lives at `docs/automation/schema/automation.schema.json`.
+- CI (future) should validate all `.automations/*.yaml` against the schema.
+
+## Orchestrator Responsibilities
+- Discover: read files from `.automations/` (supports `*.yml` and `*.yaml`).
+- Validate: parse and reject invalid configs with clear errors.
+- Subscribe: map trigger types to event sources (internal scheduler, GitHub events, or polling).
+- Execute: run the command in the target repo working tree with `instructions` piped to stdin (or as an argument, depending on your runner).
+- Idempotency: avoid duplicate executions (use content hashes + timestamps for schedules; delivery ids for GitHub events).
+- Observability: log decisions; surface successes and failures to GitHub comments where applicable.
+
+## Security & Safeguards
+- Never echo secrets in logs. Scrub `GITHUB_TOKEN` unless `FORWARD_GITHUB_TOKEN=1`.
+- Allow per‑automation `env` to set minimal environment needed; prefer repo/runner defaults for everything else.
+- Enforce sane execution timeouts at the orchestrator.
+
+## Roadmap
+- Add `conditions` for boolean filters (branch, path, labels).
+- Support matrix runs (e.g., multiple repos or paths).
+- Built‑in templates for common workflows.
+

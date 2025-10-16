@@ -68,6 +68,9 @@ tests/test_reporelay_watcher.py
 - The watcher logs under the `reporelay` logger; adjust `logging.basicConfig` in `RepoRelay/watcher.py` if you need custom formatting.
 - To simulate the external command locally, point `CODEX_CMD` at `./RepoRelay/mock_codex.py` for quick smoke tests.
 
+## Documentation
+- `RepoRelay/TEST_PLAN.md` – manual / agent validation scenarios.
+- `docs/automation/README.md` – YAML automations spec, schema, and examples.
+
 ## License
 MIT
-

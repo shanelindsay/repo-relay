@@ -1,0 +1,12 @@
+version: 1
+name: Issue Triage
+description: Label and respond to newly opened issues
+on:
+  github_issue:
+    types: [opened]
+run:
+  repo: owner/repo
+  instructions: |
+    Read the new issue and propose labels, priority, and next steps.
+    Ask for missing details when necessary. Keep the reply friendly.
+

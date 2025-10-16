@@ -1,0 +1,13 @@
+version: 1
+name: PR Smoke Tests
+description: Re-evaluate PR when new commits are pushed
+on:
+  pull_request:
+    types: [synchronize]
+    branches: [main]
+run:
+  repo: owner/repo
+  instructions: |
+    Re-run quick checks on the PR diff and comment with any
+    issues or risky changes. Keep feedback concise and actionable.
+
