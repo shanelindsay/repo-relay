@@ -17,24 +17,24 @@ Define lightweight automations as YAML files stored in a repository folder. Each
   - at: `HH:MM` (24-hour, default `00:00`)
   - day_of_week: `mon..sun` (weekly only)
   - day_of_month: `1..31` (monthly only)
-  - or `cron`: five‑field `minute hour day month dayOfWeek` string
-- `github_issue` — fires on GitHub issue lifecycle events
+  - or `cron`: five-field `minute hour day month dayOfWeek` string
+- `github_issue` - fires on GitHub issue lifecycle events
   - types: `opened` | `closed` | `reopened` | `labeled` | `unlabeled`
-- `pull_request` — fires on PR lifecycle events
+- `pull_request` - fires on PR lifecycle events
   - types: `opened` | `closed` | `reopened` | `synchronize` (new commits) | `labeled` | `unlabeled`
   - optional filters: `branches`, `paths`
 
 Note: Each automation supports exactly one trigger (`on` accepts exactly one key).
 
 ## Run Parameters
-- `model` — how the agent runs
+- `model` - how the agent runs
   - `name` (default `gpt-5-5`)
   - `variant` (default `gpt-5-codecs`)
   - `reasoning` (default `medium`)
-- `repo` — GitHub repo in `owner/name` form (defaults to the current repo if omitted)
-- `instructions` — free text block with the task to perform
-- `command` — optional override of the runner (default: `codex exec -`)
-- `env` — key/value environment exported to the run (supports simple `${VAR}` interpolation)
+- `repo` - GitHub repo in `owner/name` form (defaults to the current repo if omitted)
+- `instructions` - free text block with the task to perform
+- `command` - optional override of the runner (default: `codex exec -`)
+- `env` - key/value environment exported to the run (supports simple `${VAR}` interpolation)
 
 Notes:
 - Model names here reflect project-level defaults for this feature, not external service guarantees. Adjust as your runner requires.
@@ -101,7 +101,7 @@ run:
 
 ## Validation
 - JSON Schema lives at `docs/automation/schema/automation.schema.json`.
-- CI validates all `.automations/*.yml` and `.automations/*.yaml` against the schema.
+- A ready-to-use GitHub Actions workflow is provided in `docs/automation/ci/validate-automations.yml`. Copy it to `.github/workflows/` to enable CI validation of `.automations/*.yml` and `.automations/*.yaml`.
 
 ## Orchestrator Responsibilities
 - Discover: read files from `.automations/` (supports `*.yml` and `*.yaml`).
@@ -131,3 +131,4 @@ Reporting defaults:
 
 ## Monthly Day Handling
 - For `monthly` schedules, if `day_of_month` exceeds the number of days in a month, the run is skipped for that month (cron-like semantics).
+

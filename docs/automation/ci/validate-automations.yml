@@ -1,4 +1,4 @@
-name: Validate automations
+name: Validate automations (example)
 on:
   pull_request:
     paths:
