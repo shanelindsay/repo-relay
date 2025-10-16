@@ -151,7 +151,7 @@ cmd_start() {
   [[ -n "$run_id" ]] && set_text_field "$item_id" "Run ID" "$run_id"
   [[ -n "$model" ]] && set_text_field "$item_id" "Model" "$model"
   [[ -n "$branch" ]] && set_text_field "$item_id" "Branch" "$branch"
-  [[ -n "$repo" ]] && set_text_field "$item_id" "Repository" "$repo"
+  # Built-in Repository field is not API-editable; skip to avoid GraphQL errors
 
   if [[ -n "$out_file" ]]; then
     mkdir -p "$(dirname "$out_file")"
