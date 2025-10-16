@@ -43,38 +43,55 @@ gh_project_id() {
 }
 
 gh_project_fields() {
-  local pid="$1"
-  gh api graphql -f query='\
-    query($id:ID!){\
-      node(id:$id){... on ProjectV2{fields(first:100){nodes{\
-        __typename id name\
-        ... on ProjectV2SingleSelectField { options { id name } }\
-      }}}}\
-    }' -f id="$pid"
+  # Prefer gh native field-list for stable shapes
+  gh project field-list "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --format json
 }
 
 field_id() {
   local pid="$1" name="$2"
-  gh_project_fields "$pid" | jq -r --arg NAME "$name" '.data.node.fields.nodes[] | select(.name==$NAME) | .id // empty'
+  gh_project_fields | jq -r --arg NAME "$name" '.fields[] | select(.name==$NAME) | .id // empty'
 }
 
 single_select_option_id() {
   local pid="$1" field_name="$2" option_name="$3"
-  gh_project_fields "$pid" | jq -r \
-    --arg FN "$field_name" --arg ON "$option_name" \
-    '.data.node.fields.nodes[] | select(.__typename=="ProjectV2SingleSelectField" and .name==$FN) | .options[] | select(.name==$ON) | .id // empty'
+  gh_project_fields | jq -r --arg FN "$field_name" --arg ON "$option_name" \
+    '.fields[] | select(.type=="ProjectV2SingleSelectField" and .name==$FN) | .options[] | select(.name==$ON) | .id // empty'
+}
+
+ensure_agent_status_field() {
+  # Create a separate single-select we control if missing
+  local name="Agent Status"
+  if gh_project_fields | jq -e --arg NAME "$name" '.fields[] | select(.name==$NAME)' >/dev/null; then
+    return 0
+  fi
+  gh project field-create "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" \
+    --name "$name" --data-type SINGLE_SELECT \
+    --single-select-options "Todo,In Progress,PR open,Done,Failed" >/dev/null || true
 }
 
 set_status() {
   local item_id="$1" status_name="$2"
   local pid; pid=$(gh_project_id)
+  # Normalize common synonyms
+  local want="$status_name"
+  [[ "$want" == "In progress" ]] && want="In Progress"
+  # Try built-in Status first
   local fid; fid=$(field_id "$pid" "Status")
-  local oid; oid=$(single_select_option_id "$pid" "Status" "$status_name")
-  if [[ -z "$fid" || -z "$oid" ]]; then
-    log "Warning: could not resolve Status field/option ('$status_name'). Skipping."
-    return 0
+  if [[ -n "$fid" ]]; then
+    local oid; oid=$(single_select_option_id "$pid" "Status" "$want" || true)
+    if [[ -n "$oid" ]]; then
+      gh project item-edit --id "$item_id" --project-id "$pid" --field-id "$fid" --single-select-option-id "$oid" >/dev/null || true
+    fi
   fi
-  gh project item-edit --id "$item_id" --project-id "$pid" --field-id "$fid" --single-select-option-id "$oid" >/dev/null
+  # Also set Agent Status (custom), creating if needed
+  ensure_agent_status_field
+  local afid; afid=$(field_id "$pid" "Agent Status")
+  if [[ -n "$afid" ]]; then
+    local aoid; aoid=$(single_select_option_id "$pid" "Agent Status" "$want" || true)
+    if [[ -n "$aoid" ]]; then
+      gh project item-edit --id "$item_id" --project-id "$pid" --field-id "$afid" --single-select-option-id "$aoid" >/dev/null || true
+    fi
+  fi
 }
 
 set_date_field() {
