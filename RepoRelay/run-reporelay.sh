@@ -10,4 +10,5 @@ if [[ -f "${REPO_ROOT}/.env" ]]; then
   set +a
 fi
 
+cd "${REPO_ROOT}"
 exec python3 -m RepoRelay.watcher "$@"
