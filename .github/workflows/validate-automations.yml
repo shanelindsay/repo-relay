@@ -1,0 +1,25 @@
+name: Validate automations
+on:
+  pull_request:
+    paths:
+      - '.automations/**/*.yml'
+      - '.automations/**/*.yaml'
+      - 'docs/automation/schema/automation.schema.json'
+
+jobs:
+  ajv-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - run: npm i -D ajv-cli@5 yaml
+      - name: Validate YAML against schema
+        run: |
+          shopt -s globstar nullglob
+          files=( .automations/**/*.{yml,yaml} )
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No automation YAML files found; skipping validation.";
+            exit 0;
+          fi
+          npx ajv -s docs/automation/schema/automation.schema.json \
+                  -d '.automations/**/*.{yml,yaml}' --strict=false

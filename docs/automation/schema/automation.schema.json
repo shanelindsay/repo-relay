@@ -17,34 +17,33 @@
       "properties": {
         "schedule": {
           "type": "object",
-          "additionalProperties": false,
           "oneOf": [
             {
               "required": ["cron"],
               "properties": {
-                "cron": {"type": "string", "minLength": 5}
+                "cron": {
+                  "type": "string",
+                  "minLength": 9,
+                  "pattern": "^(\\S+\\s+){4}\\S+$"
+                }
               }
             },
             {
               "required": ["frequency"],
               "properties": {
                 "frequency": {"type": "string", "enum": ["daily", "weekly", "monthly"]},
-                "at": {"type": "string", "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$"},
+                "at": {"type": "string", "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$", "default": "00:00"},
                 "day_of_week": {"type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]},
                 "day_of_month": {"type": "integer", "minimum": 1, "maximum": 31}
               },
               "allOf": [
-                {
-                  "if": {"properties": {"frequency": {"const": "weekly"}}},
-                  "then": {"required": ["day_of_week"]}
-                },
-                {
-                  "if": {"properties": {"frequency": {"const": "monthly"}}},
-                  "then": {"required": ["day_of_month"]}
-                }
+                { "if": {"properties": {"frequency": {"const": "weekly"}}}, "then": {"required": ["day_of_week"]} },
+                { "if": {"properties": {"frequency": {"const": "monthly"}}}, "then": {"required": ["day_of_month"]} },
+                { "if": {"properties": {"frequency": {"const": "daily"}}}, "then": {"not": {"anyOf": [ {"required": ["day_of_week"]}, {"required": ["day_of_month"]} ] } } }
               ]
             }
-          ]
+          ],
+          "unevaluatedProperties": false
         },
         "github_issue": {
           "type": "object",
@@ -101,10 +100,12 @@
         "command": {"type": "string", "default": "codex exec -"},
         "env": {
           "type": "object",
-          "additionalProperties": {"type": "string"}
+          "patternProperties": {
+            "^[A-Z][A-Z0-9_]*$": { "type": "string" }
+          },
+          "additionalProperties": false
         }
       }
     }
   }
 }
-
