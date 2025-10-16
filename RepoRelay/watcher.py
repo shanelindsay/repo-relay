@@ -685,6 +685,16 @@ def _dispatch_finish(gh: GitHub, cfg: Config, hub_repo: str, run_id: str, ok: bo
         logging.getLogger("reporelay").warning("Failed to dispatch %s: %r", event, e)
 
 
+def _dispatch_pr_opened(gh: GitHub, cfg: Config, hub_repo: str, run_id: str, pr_url: str):
+    if not cfg.projects_enable or not hub_repo or not pr_url:
+        return
+    payload = {"run_id": run_id, "pr_url": pr_url}
+    try:
+        gh.repository_dispatch(hub_repo, "pr_opened", payload)
+    except Exception as e:
+        logging.getLogger("reporelay").warning("Failed to dispatch pr_opened: %r", e)
+
+
 def extract_intent(text: str) -> Tuple[str, Optional[str]]:
     """Infer trigger intent from comment text."""
     snippet = text or ""
@@ -1076,12 +1086,19 @@ def main():
                         except Exception:
                             pass
 
-                        rc_status, out, err = run_external(
-                            cfg.codex_cmd,
-                            args,
-                            payload_to_send,
-                            cfg.codex_timeout,
-                            cwd=local_path,
+                    # pr_opened dispatch
+                    try:
+                        pr_html = issue.get("html_url", "")
+                        _dispatch_pr_opened(gh, cfg, cfg.dispatch_repo, run_id, pr_html)
+                    except Exception:
+                        pass
+
+                    rc_status, out, err = run_external(
+                        cfg.codex_cmd,
+                        args,
+                        payload_to_send,
+                        cfg.codex_timeout,
+                        cwd=local_path,
                         )
                     processed_out = postprocess_stdout(out, cfg.codex_cmd)
 
