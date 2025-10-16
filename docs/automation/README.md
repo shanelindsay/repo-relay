@@ -2,7 +2,7 @@
 
 Define lightweight automations as YAML files stored in a repository folder. Each file describes when to trigger and what to run. The orchestrator scans the folder, validates each YAML file, and executes matching automations on events or on a schedule.
 
-- Default folder: `.automations/` (configurable via `AUTOMATIONS_DIR`)
+- Default folder: `.automations/` (fixed path for the first release)
 - File format: YAML. Configs are versioned with `version: 1` (see `schema/automation.schema.json`).
 - Purpose: Make it easy to declaratively codify small, repeatable "run the agent with these instructions" tasks without writing code.
 
@@ -131,4 +131,3 @@ Reporting defaults:
 
 ## Monthly Day Handling
 - For `monthly` schedules, if `day_of_month` exceeds the number of days in a month, the run is skipped for that month (cron-like semantics).
-
