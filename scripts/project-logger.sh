@@ -29,8 +29,9 @@ set -euo pipefail
 command -v gh >/dev/null || { echo "Error: gh CLI not found" >&2; exit 1; }
 command -v jq >/dev/null || { echo "Error: jq not found" >&2; exit 1; }
 
-: "${PROJECT_OWNER:?set PROJECT_OWNER (org or user)}"
 : "${PROJECT_NUMBER:?set PROJECT_NUMBER (project number)}"
+# PROJECT_OWNER is optional; default to @me to avoid owner type issues
+PROJECT_OWNER="${PROJECT_OWNER:-@me}"
 
 # Prefer GH_TOKEN if present, else fall back to GITHUB_TOKEN
 export GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
