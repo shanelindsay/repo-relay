@@ -183,6 +183,8 @@ class Config:
     projects_enable: bool = field(default_factory=lambda: _env_flag("PROJECTS_ENABLE", False))
     dispatch_repo: str = field(default_factory=lambda: _env("DISPATCH_REPO", ""))
     default_model: str = field(default_factory=lambda: os.getenv("PROJECT_DEFAULT_MODEL", "gpt-5-codex"))
+    project_owner: str = field(default_factory=lambda: os.getenv("PROJECT_OWNER", ""))
+    project_number: str = field(default_factory=lambda: os.getenv("PROJECT_NUMBER", ""))
 
     def __post_init__(self):
         if self.state_path is None:
@@ -716,7 +718,7 @@ def _dispatch_pr_opened(gh: GitHub, cfg: Config, hub_repo: str, run_id: str, pr_
         logging.getLogger("reporelay").warning("Failed to dispatch pr_opened: %r", e)
 
 
-def _logger_env_for_cli() -> Dict[str, str]:
+def _logger_env_for_cli(cfg: Optional[Config] = None) -> Dict[str, str]:
     env = dict(os.environ)
     # The logger script expects GH_TOKEN or GITHUB_TOKEN; prefer GH_TOKEN
     tok = env.get("GITHUB_TOKEN", "")
@@ -725,6 +727,11 @@ def _logger_env_for_cli() -> Dict[str, str]:
     # ensure common binary path where gh may live
     hp = str(Path.home() / "bin")
     env["PATH"] = env.get("PATH", "") + (":" + hp if hp not in env.get("PATH", "") else "")
+    if cfg is not None:
+        if cfg.project_owner:
+            env["PROJECT_OWNER"] = cfg.project_owner
+        if cfg.project_number:
+            env["PROJECT_NUMBER"] = str(cfg.project_number)
     return env
 
 
