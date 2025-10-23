@@ -26,6 +26,12 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import requests
+from requests.adapters import HTTPAdapter
+try:
+    # urllib3>=1.26
+    from urllib3.util.retry import Retry
+except Exception:  # pragma: no cover - fallback for older urllib3
+    from urllib3.util import Retry  # type: ignore
 
 ISO8601 = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -211,6 +217,26 @@ class Config:
 class GitHub:
     def __init__(self, token: str):
         self.session = requests.Session()
+        # Configure robust retries for transient network/server errors on idempotent methods
+        # Environment-tunable via REPORELAY_HTTP_* variables
+        total_retries = int(_env("HTTP_TOTAL_RETRIES", "6"))
+        connect_retries = int(_env("HTTP_CONNECT_RETRIES", "6"))
+        read_retries = int(_env("HTTP_READ_RETRIES", "6"))
+        backoff = float(_env("HTTP_BACKOFF", "0.5"))
+        retry = Retry(
+            total=total_retries,
+            connect=connect_retries,
+            read=read_retries,
+            status=total_retries,
+            backoff_factor=backoff,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset(["HEAD", "GET", "OPTIONS"]),
+            raise_on_status=False,
+            respect_retry_after_header=True,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=100, pool_maxsize=100)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         self.session.headers.update({
             "Authorization": f"token {token}",
             "Accept": "application/vnd.github+json",

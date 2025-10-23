@@ -44,6 +44,8 @@ RepoRelay first loads environment variables from a `.env` file in this directory
 - `REPORELAY_IGNORE_SELF` (`0`): Leave at `0` to process comments written by the authenticated account; set to `1` to skip self-authored comments and avoid loops.
 - `REPORELAY_POLL_SECONDS` (`20`): Poll interval for the GitHub API loop.
 - `REPORELAY_PER_REPO_PAUSE` (`0.3`): Sleep inserted between repos to spread API calls.
+ - `REPORELAY_HTTP_TOTAL_RETRIES` (`6`), `REPORELAY_HTTP_CONNECT_RETRIES` (`6`), `REPORELAY_HTTP_READ_RETRIES` (`6`), `REPORELAY_HTTP_BACKOFF` (`0.5`):
+   Controls exponential backoff for transient GitHub API errors (applied to idempotent methods like GET). Honors `Retry-After` and common 5xx/429 statuses.
 - `REPORELAY_STATE` (`$REPORELAY_ROOT/.reporelay_state.json`): JSON file storing per-repo watermarks and history .
 - `REPORELAY_LOCKFILE` (`$REPORELAY_ROOT/.reporelay.lock`): Prevents multiple watcher instances in the same root.
 - `CODEX_CMD` (`codex`): External command to execute.
